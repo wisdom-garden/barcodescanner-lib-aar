@@ -140,4 +140,8 @@
   <string name="result_wifi">找到無線區網設定</string>
   <string name="sbc_name">Google 圖書搜尋</string>
   <string name="wifi_changing_network">網路連接中\u2026</string>
+  <string name="decoding">解碼中...</string>
+  <string name="decode_failed">解碼圖片失敗!</string>
+  <string name="select_barcode_image">選擇二維碼圖片</string>
+  <string name="select_from_album">相冊</string>
 </resources>

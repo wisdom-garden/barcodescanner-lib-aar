@@ -16,39 +16,27 @@
 
 package com.google.zxing.client.android;
 
-import android.content.res.Configuration;
-import android.hardware.Camera;
-import android.widget.Button;
-import com.google.zxing.BarcodeFormat;
-import com.google.zxing.DecodeHintType;
-import com.google.zxing.Result;
-import com.google.zxing.ResultMetadataType;
-import com.google.zxing.ResultPoint;
-import com.google.zxing.client.android.camera.CameraManager;
-import com.google.zxing.client.android.camera.open.OpenCameraInterface;
-import com.google.zxing.client.android.clipboard.ClipboardInterface;
-import com.google.zxing.client.android.history.HistoryActivity;
-import com.google.zxing.client.android.history.HistoryItem;
-import com.google.zxing.client.android.history.HistoryManager;
-import com.google.zxing.client.android.result.ResultButtonListener;
-import com.google.zxing.client.android.result.ResultHandler;
-import com.google.zxing.client.android.result.ResultHandlerFactory;
-import com.google.zxing.client.android.result.supplement.SupplementalInfoRetriever;
-
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.ProgressDialog;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.ActivityInfo;
+import android.content.res.Configuration;
+import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Paint;
+import android.hardware.Camera;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
+import android.os.Looper;
 import android.os.Message;
 import android.preference.PreferenceManager;
+import android.provider.MediaStore;
+import android.text.TextUtils;
 import android.util.Log;
 import android.util.TypedValue;
 import android.view.KeyEvent;
@@ -62,15 +50,39 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowManager;
+import android.widget.Button;
 import android.widget.ImageView;
 import android.widget.TextView;
 import android.widget.Toast;
+
+import com.google.zxing.BarcodeFormat;
+import com.google.zxing.BinaryBitmap;
+import com.google.zxing.ChecksumException;
+import com.google.zxing.DecodeHintType;
+import com.google.zxing.FormatException;
+import com.google.zxing.NotFoundException;
+import com.google.zxing.RGBLuminanceSource;
+import com.google.zxing.Result;
+import com.google.zxing.ResultMetadataType;
+import com.google.zxing.ResultPoint;
+import com.google.zxing.client.android.camera.CameraManager;
+import com.google.zxing.client.android.camera.open.OpenCameraInterface;
+import com.google.zxing.client.android.clipboard.ClipboardInterface;
+import com.google.zxing.client.android.history.HistoryItem;
+import com.google.zxing.client.android.history.HistoryManager;
+import com.google.zxing.client.android.result.ResultButtonListener;
+import com.google.zxing.client.android.result.ResultHandler;
+import com.google.zxing.client.android.result.ResultHandlerFactory;
+import com.google.zxing.client.android.result.supplement.SupplementalInfoRetriever;
+import com.google.zxing.common.HybridBinarizer;
+import com.google.zxing.qrcode.QRCodeReader;
 
 import java.io.IOException;
 import java.text.DateFormat;
 import java.util.Collection;
 import java.util.Date;
 import java.util.EnumSet;
+import java.util.Hashtable;
 import java.util.Map;
 
 import barcodescanner.xservices.nl.barcodescanner.R;
@@ -93,6 +105,7 @@ public final class CaptureActivity extends Activity implements SurfaceHolder.Cal
   private static final String[] ZXING_URLS = { "http://zxing.appspot.com/scan", "zxing://scan/" };
 
   public static final int HISTORY_REQUEST_CODE = 0x0000bacc;
+  public static final int OPEN_ALBUM_REQUEST_CODE = 89;
 
   private static final Collection<ResultMetadataType> DISPLAYABLE_METADATA_TYPES =
       EnumSet.of(ResultMetadataType.ISSUE_NUMBER,
@@ -106,6 +119,8 @@ public final class CaptureActivity extends Activity implements SurfaceHolder.Cal
   private ViewfinderView viewfinderView;
   private TextView statusView;
   private Button flipButton;
+  private Button decodeImageButton;
+  private Button cancelButton;
   private View resultView;
   private Result lastResult;
   private boolean hasSurface;
@@ -120,6 +135,12 @@ public final class CaptureActivity extends Activity implements SurfaceHolder.Cal
   private InactivityTimer inactivityTimer;
   private BeepManager beepManager;
   private AmbientLightManager ambientLightManager;
+
+  private static final int PARSE_BARCODE_SUC = 300;
+  private static final int PARSE_BARCODE_FAIL = 303;
+  private ProgressDialog mProgress;
+  private String photo_path;
+  private Bitmap bmp;
 
   ViewfinderView getViewfinderView() {
     return viewfinderView;
@@ -160,7 +181,7 @@ public final class CaptureActivity extends Activity implements SurfaceHolder.Cal
   @Override
   protected void onResume() {
     super.onResume();
-    
+
     // historyManager must be initialized here to update the history preference
     historyManager = new HistoryManager(this);
     historyManager.trimHistory();
@@ -177,6 +198,8 @@ public final class CaptureActivity extends Activity implements SurfaceHolder.Cal
     resultView = findViewById(R.id.result_view);
     statusView = (TextView) findViewById(R.id.status_view);
     flipButton = (Button) findViewById(R.id.flip_button);
+    decodeImageButton = (Button) findViewById(R.id.decodeImage_Button);
+    cancelButton = (Button) findViewById(R.id.cancel_action);
 
     handler = null;
     lastResult = null;
@@ -242,7 +265,7 @@ public final class CaptureActivity extends Activity implements SurfaceHolder.Cal
             cameraManager.setManualCameraId(cameraId);
           }
         }
-        
+
         String customPromptMessage = intent.getStringExtra(Intents.Scan.PROMPT_MESSAGE);
         if (customPromptMessage != null) {
           statusView.setText(customPromptMessage);
@@ -307,7 +330,7 @@ public final class CaptureActivity extends Activity implements SurfaceHolder.Cal
       }
     }
   }
-  
+
   private static boolean isZXingURL(String dataString) {
     if (dataString == null) {
       return false;
@@ -383,33 +406,146 @@ public final class CaptureActivity extends Activity implements SurfaceHolder.Cal
 
   @Override
   public boolean onOptionsItemSelected(MenuItem item) {
-    Intent intent = new Intent(Intent.ACTION_VIEW);
-    intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_WHEN_TASK_RESET);
-    int itemId = item.getItemId();
-    if (itemId == R.id.menu_history) {
-        intent.setClassName(this, HistoryActivity.class.getName());
-        startActivityForResult(intent, HISTORY_REQUEST_CODE);
-    } else if (itemId == R.id.menu_settings) {
-        intent.setClassName(this, PreferencesActivity.class.getName());
-        startActivity(intent);
-    } else if (itemId == R.id.menu_help) {
-        intent.setClassName(this, HelpActivity.class.getName());
-        startActivity(intent);
-    } else {
-        return super.onOptionsItemSelected(item);
-    }
+//    Intent intent = new Intent(Intent.ACTION_VIEW);
+//    intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_WHEN_TASK_RESET);
+//    int itemId = item.getItemId();
+//    if (itemId == R.id.menu_history) {
+//        intent.setClassName(this, HistoryActivity.class.getName());
+//        startActivityForResult(intent, HISTORY_REQUEST_CODE);
+//    } else if (itemId == R.id.menu_settings) {
+//        intent.setClassName(this, PreferencesActivity.class.getName());
+//        startActivity(intent);
+//    } else if (itemId == R.id.menu_help) {
+//        intent.setClassName(this, HelpActivity.class.getName());
+//        startActivity(intent);
+//    } else {
+//        return super.onOptionsItemSelected(item);
+//    }
     return true;
   }
 
   @Override
   public void onActivityResult(int requestCode, int resultCode, Intent intent) {
-    if (resultCode == RESULT_OK && requestCode == HISTORY_REQUEST_CODE && historyManager != null) {
-      int itemNumber = intent.getIntExtra(Intents.History.ITEM_NUMBER, -1);
-      if (itemNumber >= 0) {
-        HistoryItem historyItem = historyManager.buildHistoryItem(itemNumber);
-        decodeOrStoreSavedBitmap(null, historyItem.getResult());
+    if(resultCode == RESULT_OK) {
+      if (requestCode == HISTORY_REQUEST_CODE && historyManager != null) {
+        int itemNumber = intent.getIntExtra(Intents.History.ITEM_NUMBER, -1);
+        if (itemNumber >= 0) {
+          HistoryItem historyItem = historyManager.buildHistoryItem(itemNumber);
+          decodeOrStoreSavedBitmap(null, historyItem.getResult());
+        }
+      } else if (requestCode == OPEN_ALBUM_REQUEST_CODE){
+        decodeAlbumImage(intent);
       }
     }
+  }
+
+  private void decodeAlbumImage(Intent intent) {
+    //get the image path
+    Cursor cursor = getContentResolver().query(intent.getData(), null, null, null, null);
+    if (cursor.moveToFirst()) {
+      photo_path = cursor.getString(cursor.getColumnIndex(MediaStore.Images.Media.DATA));
+    }
+    cursor.close();
+
+    mProgress = new ProgressDialog(CaptureActivity.this);
+    mProgress.setMessage(getString(R.string.decoding));
+    mProgress.setCancelable(false);
+    mProgress.show();
+
+    new Thread(new Runnable() {
+      @Override
+      public void run() {
+        Looper.prepare();
+        Result result = scanningImage(photo_path);
+        if (result != null) {
+          Message m = mHandler.obtainMessage();
+          m.what = PARSE_BARCODE_SUC;
+          m.obj = result;
+          mHandler.sendMessage(m);
+        } else {
+          Message m = mHandler.obtainMessage();
+          m.what = PARSE_BARCODE_FAIL;
+          m.obj = getString(R.string.decode_failed);
+          mHandler.sendMessage(m);
+          Looper.loop();
+        }
+      }
+    }).start();
+  }
+
+  private Handler mHandler = new Handler(){
+    @Override
+    public void handleMessage(Message msg) {
+      super.handleMessage(msg);
+      mProgress.dismiss();
+      switch (msg.what) {
+        case PARSE_BARCODE_SUC:
+          onResultHandler((Result)msg.obj, bmp);
+          break;
+        case PARSE_BARCODE_FAIL:
+          Toast.makeText(CaptureActivity.this, (String)msg.obj, Toast.LENGTH_LONG).show();
+          break;
+      }
+    }
+  };
+
+  /**
+   * @param result
+   * @param bitmap
+   */
+  private void onResultHandler(Result result, Bitmap bitmap){
+    if(TextUtils.isEmpty(result.getText())){
+      Toast.makeText(CaptureActivity.this, getString(R.string.decode_failed), Toast.LENGTH_SHORT).show();
+      return;
+    }
+    Intent resultIntent = new Intent();
+    Bundle bundle = new Bundle();
+    bundle.putString("SCAN_RESULT", result.getText());
+    bundle.putString("SCAN_RESULT_FORMAT", result.getBarcodeFormat().toString());
+//    bundle.putParcelable("bitmap", bitmap);
+    resultIntent.putExtras(bundle);
+    this.setResult(RESULT_OK, resultIntent);
+    CaptureActivity.this.finish();
+  }
+
+  /**
+   * @param path
+   * @return
+   */
+  public Result scanningImage(String path) {
+    if(TextUtils.isEmpty(path)){
+      return null;
+    }
+    Hashtable<DecodeHintType, String> hints = new Hashtable<DecodeHintType, String>();
+    hints.put(DecodeHintType.CHARACTER_SET, "UTF8");  //set barcode character set
+
+    BitmapFactory.Options options = new BitmapFactory.Options();
+    options.inJustDecodeBounds = true;  //get image original size
+    bmp = BitmapFactory.decodeFile(path, options);
+    options.inJustDecodeBounds = false; //get image new size
+    int sampleSize = (int) (options.outHeight / (float) 200);
+    if (sampleSize <= 0)
+      sampleSize = 1;
+    options.inSampleSize = sampleSize;
+
+    bmp = BitmapFactory.decodeFile(path, options);
+    int[] pixels =  new int[bmp.getWidth()*bmp.getHeight()];
+    bmp.getPixels(pixels, 0, bmp.getWidth(), 0, 0, bmp.getWidth(), bmp.getHeight());
+    RGBLuminanceSource source = new RGBLuminanceSource(bmp.getWidth(),bmp.getHeight(),pixels);
+    BinaryBitmap bitmap1 = new BinaryBitmap(new HybridBinarizer(source));
+    QRCodeReader reader = new QRCodeReader();
+
+    try {
+      return reader.decode(bitmap1, hints);
+    } catch (NotFoundException e) {
+      e.printStackTrace();
+    }
+    catch (ChecksumException e) {
+      e.printStackTrace();
+    } catch (FormatException e) {
+      e.printStackTrace();
+    }
+    return null;
   }
 
   private void decodeOrStoreSavedBitmap(Bitmap bitmap, Result result) {
@@ -531,10 +667,10 @@ public final class CaptureActivity extends Activity implements SurfaceHolder.Cal
 
   private static void drawLine(Canvas canvas, Paint paint, ResultPoint a, ResultPoint b, float scaleFactor) {
     if (a != null && b != null) {
-      canvas.drawLine(scaleFactor * a.getX(), 
-                      scaleFactor * a.getY(), 
-                      scaleFactor * b.getX(), 
-                      scaleFactor * b.getY(), 
+      canvas.drawLine(scaleFactor * a.getX(),
+                      scaleFactor * a.getY(),
+                      scaleFactor * b.getX(),
+                      scaleFactor * b.getY(),
                       paint);
     }
   }
@@ -659,7 +795,7 @@ public final class CaptureActivity extends Activity implements SurfaceHolder.Cal
     }
 
     if (source == IntentSource.NATIVE_APP_INTENT) {
-      
+
       // Hand back whatever action they requested - this can be changed to Intents.Scan.ACTION when
       // the deprecated intent is retired.
       Intent intent = new Intent(getIntent().getAction());
@@ -695,15 +831,15 @@ public final class CaptureActivity extends Activity implements SurfaceHolder.Cal
         }
       }
       sendReplyMessage(R.id.return_scan_result, intent, resultDurationMS);
-      
+
     } else if (source == IntentSource.PRODUCT_SEARCH_LINK) {
-      
+
       // Reformulate the URL which triggered us into a query, so that the request goes to the same
       // TLD as the scan URL.
       int end = sourceUrl.lastIndexOf("/scan");
-      String replyURL = sourceUrl.substring(0, end) + "?q=" + resultHandler.getDisplayContents() + "&source=zxing";      
+      String replyURL = sourceUrl.substring(0, end) + "?q=" + resultHandler.getDisplayContents() + "&source=zxing";
       sendReplyMessage(R.id.launch_product_query, replyURL, resultDurationMS);
-      
+
     } else if (source == IntentSource.ZXING_LINK) {
 
       if (scanFromWebPageManager != null && scanFromWebPageManager.isScanFromWebPage()) {
@@ -711,10 +847,10 @@ public final class CaptureActivity extends Activity implements SurfaceHolder.Cal
         scanFromWebPageManager = null;
         sendReplyMessage(R.id.launch_product_query, replyURL, resultDurationMS);
       }
-      
+
     }
   }
-  
+
   private void sendReplyMessage(int id, Object arg, long delayMS) {
     if (handler != null) {
       Message message = Message.obtain(handler, id, arg);
@@ -774,6 +910,27 @@ public final class CaptureActivity extends Activity implements SurfaceHolder.Cal
     statusView.setVisibility(View.VISIBLE);
     viewfinderView.setVisibility(View.VISIBLE);
     lastResult = null;
+
+    cancelButton.setVisibility(View.VISIBLE);
+    cancelButton.setOnClickListener(new Button.OnClickListener() {
+      @Override
+      public void onClick(View v) {
+        CaptureActivity.this.setResult(RESULT_CANCELED, null);
+        CaptureActivity.this.finish();
+      }
+    });
+
+    //add a decode image button
+    decodeImageButton.setVisibility(View.VISIBLE);
+    decodeImageButton.setOnClickListener(new Button.OnClickListener() {
+      @Override
+      public void onClick(View v) {
+        Intent innerIntent = new Intent(Intent.ACTION_GET_CONTENT); //"android.intent.action.GET_CONTENT"
+        innerIntent.setType("image/*");
+        Intent wrapperIntent = Intent.createChooser(innerIntent, getString(R.string.select_barcode_image));
+        startActivityForResult(wrapperIntent, OPEN_ALBUM_REQUEST_CODE);
+      }
+    });
 
     // in case the device has multiple camera's and we want to show the flip button: show the flip button :)
     if (getIntent().getBooleanExtra(Intents.Scan.SHOW_FLIP_CAMERA_BUTTON, false)) {
