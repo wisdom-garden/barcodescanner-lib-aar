@@ -196,7 +196,7 @@
   <TextView android:id="@+id/status_view"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_gravity="bottom|center_horizontal"
+            android:layout_gravity="top|center_horizontal"
             android:background="@color/transparent"
             android:text="@string/msg_default_status"
             android:textColor="@color/status_text"/>
@@ -214,5 +214,29 @@
           android:layout_gravity="top|right"
           android:drawableLeft="@drawable/toggle_torch"
           android:visibility="invisible"/>
+
+  <LinearLayout
+      android:orientation="horizontal"
+      android:layout_width="fill_parent"
+      android:layout_height="45dp"
+      android:layout_gravity="bottom|center_horizontal"
+      android:weightSum="2">
+
+    <Button android:id="@+id/cancel_action"
+        android:layout_width="fill_parent"
+        android:layout_height="wrap_content"
+        android:text="@string/button_cancel"
+        android:textColor="@color/status_text"
+        android:visibility="visible"
+        android:layout_weight="1"/>
+
+    <Button android:id="@+id/decodeImage_Button"
+        android:layout_width="fill_parent"
+        android:layout_height="wrap_content"
+        android:text="@string/select_from_album"
+        android:textColor="@color/status_text"
+        android:visibility="visible"
+        android:layout_weight="1"/>
+  </LinearLayout>
 
 </merge>
