@@ -16,6 +16,7 @@
 
 package com.google.zxing.client.android;
 
+import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.ProgressDialog;
@@ -30,6 +31,7 @@ import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.hardware.Camera;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -60,6 +62,7 @@ import com.google.zxing.BinaryBitmap;
 import com.google.zxing.ChecksumException;
 import com.google.zxing.DecodeHintType;
 import com.google.zxing.FormatException;
+import com.google.zxing.GetPathFromUri4kitkat;
 import com.google.zxing.NotFoundException;
 import com.google.zxing.RGBLuminanceSource;
 import com.google.zxing.Result;
@@ -105,7 +108,8 @@ public final class CaptureActivity extends Activity implements SurfaceHolder.Cal
   private static final String[] ZXING_URLS = { "http://zxing.appspot.com/scan", "zxing://scan/" };
 
   public static final int HISTORY_REQUEST_CODE = 0x0000bacc;
-  public static final int OPEN_ALBUM_REQUEST_CODE = 89;
+  public static final int GALLERY_INTENT_CALLED = 8911;
+  public static final int GALLERY_KITKAT_INTENT_CALLED = 8922;
 
   private static final Collection<ResultMetadataType> DISPLAYABLE_METADATA_TYPES =
       EnumSet.of(ResultMetadataType.ISSUE_NUMBER,
@@ -424,8 +428,11 @@ public final class CaptureActivity extends Activity implements SurfaceHolder.Cal
     return true;
   }
 
+  @SuppressLint("NewApi")
   @Override
   public void onActivityResult(int requestCode, int resultCode, Intent intent) {
+    Uri imageUri = null;
+    String photoPath = null;
     if(resultCode == RESULT_OK) {
       if (requestCode == HISTORY_REQUEST_CODE && historyManager != null) {
         int itemNumber = intent.getIntExtra(Intents.History.ITEM_NUMBER, -1);
@@ -433,19 +440,26 @@ public final class CaptureActivity extends Activity implements SurfaceHolder.Cal
           HistoryItem historyItem = historyManager.buildHistoryItem(itemNumber);
           decodeOrStoreSavedBitmap(null, historyItem.getResult());
         }
-      } else if (requestCode == OPEN_ALBUM_REQUEST_CODE){
-        decodeAlbumImage(intent);
+      } else if (requestCode == GALLERY_INTENT_CALLED){ //for < android kitkat(4.4)
+        imageUri = intent.getData();
+        Cursor cursor = getContentResolver().query(imageUri, null, null, null, null);
+        if (cursor.moveToFirst()) {
+          photoPath = cursor.getString(cursor.getColumnIndex(MediaStore.Images.Media.DATA));
+        }
+        cursor.close();
+        decodeAlbumImage(photoPath);
+      } else if (requestCode == GALLERY_KITKAT_INTENT_CALLED){  //for >= android kitkat(4.4)
+        imageUri = intent.getData();
+        final int takeFlags = (Intent.FLAG_GRANT_READ_URI_PERMISSION| Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+        // Check for the freshest data.
+        getContentResolver().takePersistableUriPermission(imageUri, takeFlags);
+        photoPath = GetPathFromUri4kitkat.getPath(getApplicationContext(),imageUri);
+        decodeAlbumImage(photoPath);
       }
     }
   }
 
-  private void decodeAlbumImage(Intent intent) {
-    //get the image path
-    Cursor cursor = getContentResolver().query(intent.getData(), null, null, null, null);
-    if (cursor.moveToFirst()) {
-      photo_path = cursor.getString(cursor.getColumnIndex(MediaStore.Images.Media.DATA));
-    }
-    cursor.close();
+  private void decodeAlbumImage(final String photoPath) {
 
     mProgress = new ProgressDialog(CaptureActivity.this);
     mProgress.setMessage(getString(R.string.decoding));
@@ -456,7 +470,7 @@ public final class CaptureActivity extends Activity implements SurfaceHolder.Cal
       @Override
       public void run() {
         Looper.prepare();
-        Result result = scanningImage(photo_path);
+        Result result = scanningImage(photoPath);
         if (result != null) {
           Message m = mHandler.obtainMessage();
           m.what = PARSE_BARCODE_SUC;
@@ -925,10 +939,18 @@ public final class CaptureActivity extends Activity implements SurfaceHolder.Cal
     decodeImageButton.setOnClickListener(new Button.OnClickListener() {
       @Override
       public void onClick(View v) {
-        Intent innerIntent = new Intent(Intent.ACTION_GET_CONTENT); //"android.intent.action.GET_CONTENT"
+        Intent innerIntent = new Intent();
         innerIntent.setType("image/*");
-        Intent wrapperIntent = Intent.createChooser(innerIntent, getString(R.string.select_barcode_image));
-        startActivityForResult(wrapperIntent, OPEN_ALBUM_REQUEST_CODE);
+        int requestCode;
+        if(Build.VERSION.SDK_INT < Build.VERSION_CODES.KITKAT){
+          innerIntent.setAction(Intent.ACTION_GET_CONTENT);
+          requestCode = GALLERY_INTENT_CALLED;
+        }else{
+          innerIntent.setAction(Intent.ACTION_OPEN_DOCUMENT);
+          innerIntent.addCategory(Intent.CATEGORY_OPENABLE);
+          requestCode = GALLERY_KITKAT_INTENT_CALLED;
+        }
+        startActivityForResult(Intent.createChooser(innerIntent, getString(R.string.select_barcode_image)), requestCode);
       }
     });
 
