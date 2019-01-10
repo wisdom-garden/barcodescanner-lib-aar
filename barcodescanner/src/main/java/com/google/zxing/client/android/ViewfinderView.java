@@ -23,7 +23,9 @@ import android.annotation.SuppressLint;
 import android.content.Context;
 import android.content.res.Resources;
 import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
+import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Rect;
 import android.util.AttributeSet;
@@ -43,10 +45,11 @@ import barcodescanner.xservices.nl.barcodescanner.R;
 public final class ViewfinderView extends View {
 
   private static final int[] SCANNER_ALPHA = {0, 64, 128, 192, 255, 192, 128, 64};
-  private static final long ANIMATION_DELAY = 80L;
+  private static final long ANIMATION_DELAY = 10L;
   private static final int CURRENT_POINT_OPACITY = 0xA0;
   private static final int MAX_RESULT_POINTS = 20;
   private static final int POINT_SIZE = 6;
+  private static final int WG_GREEN = Color.parseColor("#1BB6B7");
 
   private CameraManager cameraManager;
   private final Paint paint;
@@ -58,6 +61,13 @@ public final class ViewfinderView extends View {
   private int scannerAlpha;
   private List<ResultPoint> possibleResultPoints;
   private List<ResultPoint> lastPossibleResultPoints;
+
+	// 扫描线移动的y
+	private int scanLineTop;
+	// 扫描线移动速度
+	private final int SCAN_VELOCITY = 5;
+	// 扫描线
+	Bitmap scanLight;
 
   // This constructor is used when the class is built from an XML resource.
   public ViewfinderView(Context context, AttributeSet attrs) {
@@ -73,6 +83,7 @@ public final class ViewfinderView extends View {
     scannerAlpha = 0;
     possibleResultPoints = new ArrayList<>(5);
     lastPossibleResultPoints = null;
+    scanLight = BitmapFactory.decodeResource(resources, R.drawable.qrcode_scan_weixin_line);
   }
 
   public void setCameraManager(CameraManager cameraManager) {
@@ -86,12 +97,12 @@ public final class ViewfinderView extends View {
       return; // not ready yet, early draw before done configuring
     }
     Rect frame = cameraManager.getFramingRect();
-    Rect previewFrame = cameraManager.getFramingRectInPreview();    
+    Rect previewFrame = cameraManager.getFramingRectInPreview();
     if (frame == null || previewFrame == null) {
       return;
     }
-    int width = canvas.getWidth();
-    int height = canvas.getHeight();
+    int width = getWidth();
+    int height = getHeight();
 
     // Draw the exterior (i.e. outside the framing rect) darkened
     paint.setColor(resultBitmap != null ? resultColor : maskColor);
@@ -105,14 +116,16 @@ public final class ViewfinderView extends View {
       paint.setAlpha(CURRENT_POINT_OPACITY);
       canvas.drawBitmap(resultBitmap, null, frame, paint);
     } else {
+        drawFrameBounds(canvas, frame);
+        drawScanLight(canvas, frame);
 
-      // Draw a red "laser scanner" line through the middle to show decoding is active
-      paint.setColor(laserColor);
-      paint.setAlpha(SCANNER_ALPHA[scannerAlpha]);
-      scannerAlpha = (scannerAlpha + 1) % SCANNER_ALPHA.length;
-      int middle = frame.height() / 2 + frame.top;
-      canvas.drawRect(frame.left + 2, middle - 1, frame.right - 1, middle + 2, paint);
-      
+    // Draw a red "laser scanner" line through the middle to show decoding is active
+    // paint.setColor(laserColor);
+    // paint.setAlpha(SCANNER_ALPHA[scannerAlpha]);
+    // scannerAlpha = (scannerAlpha + 1) % SCANNER_ALPHA.length;
+    // int middle = frame.height() / 2 + frame.top;
+    // canvas.drawRect(frame.left + 2, middle - 1, frame.right - 1, middle + 2, paint);
+
       float scaleX = frame.width() / (float) previewFrame.width();
       float scaleY = frame.height() / (float) previewFrame.height();
 
@@ -157,6 +170,72 @@ public final class ViewfinderView extends View {
                             frame.bottom + POINT_SIZE);
     }
   }
+
+	/**
+	 * 绘制取景框边框
+	 * 
+	 * @param canvas
+	 * @param frame
+	 */
+	private void drawFrameBounds(Canvas canvas, Rect frame) {
+        final int  STROKE_WIDTH = 2;
+        paint.setColor(Color.WHITE);
+        paint.setStrokeWidth(STROKE_WIDTH);
+        paint.setStyle(Paint.Style.STROKE);
+
+        canvas.drawRect(frame, paint);
+		paint.setColor(WG_GREEN);
+		paint.setStyle(Paint.Style.FILL);
+
+		int corWidth = 8;
+		int corLength = 36;
+
+        Rect innerRect = new Rect(frame.left + corWidth - STROKE_WIDTH, frame.top + corWidth - STROKE_WIDTH , frame.right
+                - corWidth + STROKE_WIDTH, frame.bottom - corWidth + STROKE_WIDTH);
+        // 左上角
+        canvas.drawRect(innerRect.left - corWidth, innerRect.top, innerRect.left, innerRect.top
+                + corLength, paint);
+        canvas.drawRect(innerRect.left - corWidth, innerRect.top - corWidth, innerRect.left
+                + corLength, innerRect.top, paint);
+        // 右上角
+        canvas.drawRect(innerRect.right, innerRect.top, innerRect.right + corWidth,
+                innerRect.top + corLength, paint);
+        canvas.drawRect(innerRect.right - corLength, innerRect.top - corWidth,
+                innerRect.right + corWidth, innerRect.top, paint);
+        // 左下角
+        canvas.drawRect(innerRect.left - corWidth, innerRect.bottom - corLength,
+                innerRect.left, innerRect.bottom, paint);
+        canvas.drawRect(innerRect.left - corWidth, innerRect.bottom, innerRect.left
+                + corLength, innerRect.bottom + corWidth, paint);
+        // 右下角
+        canvas.drawRect(innerRect.right, innerRect.bottom - corLength, innerRect.right
+                + corWidth, innerRect.bottom, paint);
+        canvas.drawRect(innerRect.right - corLength, innerRect.bottom, innerRect.right
+                + corWidth, innerRect.bottom + corWidth, paint);
+	}
+
+	/**
+	 * 绘制移动扫描线
+	 * 
+	 * @param canvas
+	 * @param frame
+	 */
+	private void drawScanLight(Canvas canvas, Rect frame) {
+
+		if (scanLineTop == 0) {
+			scanLineTop = frame.top;
+		}
+
+		final int  stepHeight = 15;
+		if (scanLineTop + stepHeight >= frame.bottom) {
+			scanLineTop = frame.top;
+		} else {
+			scanLineTop += SCAN_VELOCITY;
+		}
+		Rect scanRect = new Rect(frame.left, scanLineTop, frame.right,
+				scanLineTop + stepHeight);
+		canvas.drawBitmap(scanLight, null, scanRect, paint);
+	}
 
   public void drawViewfinder() {
     Bitmap resultBitmap = this.resultBitmap;
